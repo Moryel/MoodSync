@@ -11,7 +11,12 @@ LINES = 40
 
 
 def annotate(title: str, text: str):
-    tail = "\n".join(text.strip().splitlines()[-LINES:])
+    lines = text.strip().splitlines()
+    # unittest prints the failures after a "=====" line: show those, not just the end
+    first = next((i for i, line in enumerate(lines) if line.startswith("=" * 20)), None)
+    if first is not None:
+        lines = lines[first:]
+    tail = "\n".join(lines[:LINES * 2] if first is not None else lines[-LINES:])
     # Annotations are one line: GitHub turns %0A back into line breaks
     body = tail.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
     print(f"::error title={title}::{body}", flush=True)
