@@ -21,6 +21,25 @@ def feed(tracker, start, seconds, closed_every=None, closed_for=0.1, jaw=0.0, fa
     return start + frames / FPS
 
 
+class WatcherTests(unittest.TestCase):
+    def test_camera_only_on_when_needed(self):
+        w = camera.CameraWatcher()
+        self.assertTrue(w.wanted(0))
+        w.set_active(False)                      # break or away
+        self.assertFalse(w.wanted(0))
+        w.set_active(True)
+        w.set_mode("off")                        # low power mode
+        self.assertFalse(w.wanted(0))
+
+    def test_bursts_on_battery(self):
+        w = camera.CameraWatcher()
+        w.set_mode("bursts")
+        start = w.cycle_start
+        on = [w.wanted(start + s) for s in range(0, 240, 10)]
+        self.assertEqual(sum(on), 4)             # 2 x 20 s in 4 minutes
+        self.assertTrue(w.wanted(start + 5) and not w.wanted(start + 30) and w.wanted(start + 125))
+
+
 class EyeTrackerTests(unittest.TestCase):
     def test_alert_person(self):
         t = camera.EyeTracker()
@@ -81,10 +100,35 @@ class BlinkTests(unittest.TestCase):
         end = feed(t, 0, 60, closed_every=12, closed_for=0.15)     # 5 a minute
         self.assertLess(t.blink_rate(end), camera.LOW_BLINK_RATE)
 
-    def test_needs_a_full_minute(self):
+    def test_needs_enough_watching(self):
         t = camera.EyeTracker()
-        end = feed(t, 0, 30, closed_every=12)
+        end = feed(t, 0, 10, closed_every=3.5, closed_for=0.15)
         self.assertIsNone(t.blink_rate(end))
+        end = feed(t, end, 20, closed_every=3.5, closed_for=0.15)
+        self.assertAlmostEqual(t.blink_rate(end), 17, delta=3)
+
+    def test_bursts_count_watched_time_only(self):
+        t = camera.EyeTracker()
+        end = 0
+        for _ in range(4):                       # 20 s bursts every 2 minutes (battery)
+            end = feed(t, end, 20, closed_every=12, closed_for=0.15)
+            end += 100
+        rate = t.blink_rate(end)
+        self.assertAlmostEqual(rate, 5, delta=1.5)          # 5 a minute, not diluted by the gaps
+        self.assertLess(rate, camera.LOW_BLINK_RATE)
+
+    def test_pause_with_closed_eyes_is_not_a_long_blink(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 10)
+        t.add(end, 0.9)                          # eyes closed when the camera pauses
+        end = feed(t, end + 60, 10)              # camera back, eyes open
+        self.assertEqual(len(t.long_blinks), 0)
+
+    def test_window_is_last_minute_of_watching(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 60, closed_every=4, closed_for=0.9)    # drowsy
+        end = feed(t, end + 500, 61, closed_every=4, closed_for=0.15)   # after a break, alert
+        self.assertLess(t.score(end), 0.1)
 
     def test_closed_eyes_are_not_blinks(self):
         t = camera.EyeTracker()

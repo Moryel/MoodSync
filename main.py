@@ -22,6 +22,7 @@ import numpy as np
 
 import camera
 import guard
+import power
 import fatigue
 import focus
 
@@ -49,6 +50,7 @@ UPDATE_INTERVAL = 0.05     # Seconds between captures (50ms = 20 FPS)
 FOCUS_FPS = 10             # Focus mode only needs enough frames for smooth fades
 FOCUS_THRESHOLD = 1        # Small steps keep fades smooth in focus mode
 IDLE_CHECK_INTERVAL = 5    # Seconds between keyboard/mouse idle checks
+IDLE_TICK = 1.0            # Main loop interval while nothing on the light or screen is changing
 SCREEN_CHECK_INTERVAL = 1  # Seconds between screen samples in focus mode
 SCREEN_RETRY_SECONDS = 30  # Wait this long after the screen could not be read
 FATIGUE_CHECK_INTERVAL = 30  # Seconds between tiredness estimates from typing
@@ -150,12 +152,16 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="only control devices whose name contains one of these words")
     parser.add_argument("--exit-color", default="000000", metavar="RRGGBB",
                         help="color left on the devices when MoodSync stops")
+    parser.add_argument("--power", choices=["auto", "full", "battery", "saver"], default="auto",
+                        help="auto = follow the charger / battery / low power mode (default); "
+                             "or force full speed, battery saving, or low power behaviour")
     parser.add_argument("--dry-run", action="store_true",
                         help="do not connect to OpenRGB, just print the colors")
     parser.add_argument("--list-monitors", action="store_true",
                         help="print the available monitors and exit")
     args = parser.parse_args(argv)
 
+    args.fps_fixed = args.fps is not None     # Otherwise the power profile picks it
     if args.fps is None:
         args.fps = FOCUS_FPS if args.program == "focus" else 1 / UPDATE_INTERVAL
     if args.threshold is None:
@@ -449,6 +455,12 @@ class ScreenProgram:
     def command(self, cmd: str, now: float):
         pass
 
+    def busy(self) -> bool:
+        return True     # Mirrors a live screen: always at full rate
+
+    def set_power(self, profile):
+        pass
+
     def close(self):
         if self.sct is not None:
             self.sct.close()
@@ -698,10 +710,23 @@ class FocusProgram:
         self.screen_color = adjust_color(pick_color(img, "average"), self.args.saturation, 1.0)
         self.screen_light = float(np.mean(img)) / 255
 
+    def busy(self) -> bool:
+        """True while the light is changing; otherwise one update a second is plenty."""
+        return (self.cue_started is not None
+                or self.session.phase in (focus.BREAK, focus.LONG_BREAK)   # breathing light
+                or not self.fader.settled())
+
+    def set_power(self, profile):
+        if self.camera is not None:
+            self.camera.set_mode(profile.camera)
+
     def next_color(self, now: float):
         dt, self.last_tick = now - self.last_tick, now
         if self.session.update(now, self.idle_estimate(now)):
             self.announce(now)
+        if self.camera is not None:
+            # Camera (and its light) off during breaks and while you are away
+            self.camera.set_active(self.session.phase == focus.FOCUS)
         self.check_fatigue(now)
         self.check_screen(now)
 
@@ -772,7 +797,6 @@ def main(argv=None):
     else:
         client, devices = setup_devices(args)
 
-    interval = 1 / args.fps
     if args.program == "screen":
         print(f"\nMonitor: {args.monitor}   Mode: {args.mode}   FPS: {args.fps:g}")
         print(f"Update threshold: {args.threshold}   Smoothing: {args.smoothing}")
@@ -812,12 +836,38 @@ def main(argv=None):
         else:
             screen_guard = None
 
+    def apply_power(profile, changed: bool):
+        """Follows the charger / battery / low power mode."""
+        if not args.fps_fixed:
+            args.fps = profile.focus_fps if args.program == "focus" else profile.screen_fps
+        program.set_power(profile)
+        if screen_guard is not None:
+            screen_guard.set_power(profile)
+        extras = {"continuous": "camera on while focusing", "bursts": "camera in short bursts",
+                  "off": "camera paused"}[profile.camera] if getattr(program, "camera", None) else None
+        details = [f"{args.fps:g} updates/s"] + ([extras] if extras else [])
+        if args.dim_white and not profile.dim_white:
+            details.append("white-area dimming paused")
+        text = f"Power: {profile.name} - " + ", ".join(details) + "."
+        if changed and getattr(program, "note", None):
+            program.note(text)
+        else:
+            print(("\n" if changed else "") + text)
+
+    power_watch = power.PowerWatch(args.power, time.monotonic())
+    apply_power(power_watch.profile, changed=False)
+    wait = screen_guard.wait if screen_guard is not None else time.sleep
+
     # Both programs open the screen themselves, so they recover from a sleeping display
     try:
         while True:
             started = time.monotonic()
             while not commands.empty():
                 program.command(commands.get(), started)
+
+            profile = power_watch.update(started)
+            if profile is not None:
+                apply_power(profile, changed=True)
 
             color = program.next_color(started)
             if screen_guard is not None:
@@ -833,8 +883,10 @@ def main(argv=None):
                 client, devices = reconnect(args)
                 last_sent = None
 
-            # Keep a steady frame rate regardless of how long the work took
-            time.sleep(max(0.0, interval - (time.monotonic() - started)))
+            # Full rate only while something is changing; otherwise let the processor sleep
+            busy = program.busy() or (screen_guard is not None and screen_guard.busy())
+            interval = 1 / args.fps if busy or not commands.empty() else IDLE_TICK
+            wait(max(0.0, interval - (time.monotonic() - started)))
 
     except KeyboardInterrupt:
         print("\n\nStopping MoodSync...")

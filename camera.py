@@ -13,8 +13,10 @@ It also counts blinks: people blink about 15-20 times a minute, but often
 less than half as much while looking at a screen, which dries the eyes. When
 the rate stays low, MoodSync reminds you to blink (BlinkReminder).
 
-Frames are processed in memory a few times a second and never saved. The face
-model (about 4 MB) is downloaded once to ~/.moodsync/ on first use.
+Frames are processed in memory and never saved. The camera is switched off
+during breaks and while you are away; on battery it only runs in short bursts
+(20 s every 2 minutes) and in low power mode not at all. The face model
+(about 4 MB) is downloaded once to ~/.moodsync/ on first use.
 """
 
 import os
@@ -39,6 +41,10 @@ MAX_BLINK = 1.0             # Closures longer than this are not blinks (looking 
 LOW_BLINK_RATE = 8          # Blinks per minute below this are too few
 LOW_BLINK_SECONDS = 120     # ...for this long before reminding
 BLINK_REMINDER_COOLDOWN = 600   # At most one reminder every 10 minutes
+MAX_FRAME_GAP = 0.5         # A longer gap between frames means the camera was paused
+MIN_BLINK_WATCH = 15        # Seconds of watching needed to judge the blink rate
+BURST_SECONDS = 20          # On battery the camera runs this long...
+BURST_CYCLE = 120           # ...every this many seconds
 
 
 def clamp(value: float) -> float:
@@ -49,11 +55,15 @@ class EyeTracker:
     """
     Turns per-frame face readings into a tiredness score. Pure logic, fed with
     (time, eyes closed score, jaw open score) so it can be tested without a camera.
+
+    Windows count *watched* time, not clock time: when the camera only runs in
+    bursts (on battery), "the last minute" means the last minute of frames.
     """
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.frames = deque()        # (time, face seen, eyes closed)
+        self.frames = deque()        # (time, face seen, eyes closed, watched seconds since previous frame)
+        self.watched = 0.0           # Watched seconds covered by self.frames
         self.long_blinks = deque()   # end times of long closures
         self.blinks = deque()        # end times of all blinks
         self.yawns = deque()         # end times of yawns
@@ -65,7 +75,13 @@ class EyeTracker:
         with self.lock:
             face = eyes is not None
             closed = face and eyes >= EYES_CLOSED
-            self.frames.append((now, face, closed))
+            gap = now - self.frames[-1][0] if self.frames else None
+            if gap is None or gap > MAX_FRAME_GAP:
+                # Camera was paused: nothing carries over from before the pause
+                gap = 0.0
+                self.closed_since = self.open_mouth_since = None
+            self.frames.append((now, face, closed, gap))
+            self.watched += gap
 
             if closed and self.closed_since is None:
                 self.closed_since = now
@@ -85,11 +101,13 @@ class EyeTracker:
                     self.yawns.append(now)
                 self.open_mouth_since = None
 
-            while self.frames and self.frames[0][0] < now - EYE_WINDOW:
+            while len(self.frames) > 1 and self.watched - self.frames[1][3] >= EYE_WINDOW:
+                self.watched -= self.frames[1][3]
                 self.frames.popleft()
-            while self.long_blinks and self.long_blinks[0] < now - EYE_WINDOW:
+            oldest = self.frames[0][0]
+            while self.long_blinks and self.long_blinks[0] < oldest:
                 self.long_blinks.popleft()
-            while self.blinks and self.blinks[0] < now - EYE_WINDOW:
+            while self.blinks and self.blinks[0] < oldest:
                 self.blinks.popleft()
             while self.yawns and self.yawns[0] < now - YAWN_WINDOW:
                 self.yawns.popleft()
@@ -97,23 +115,21 @@ class EyeTracker:
     def readings(self, now: float):
         """Returns (eye closure share, long blinks/min, yawns in 5 min) or None if the face was not seen enough."""
         with self.lock:
-            frames = [f for f in self.frames if f[0] >= now - EYE_WINDOW]
-            seen = [f for f in frames if f[1]]
-            if len(frames) < 50 or len(seen) < MIN_FACE_SHARE * len(frames):
+            seen = [f for f in self.frames if f[1]]
+            if len(self.frames) < 50 or len(seen) < MIN_FACE_SHARE * len(self.frames):
                 return None
             closure = sum(1 for f in seen if f[2]) / len(seen)
             return closure, len(self.long_blinks), len(self.yawns)
 
     def blink_rate(self, now: float):
-        """Blinks in the last minute, or None if the face was not seen for most of it."""
+        """Blinks per minute of watching, or None if too little was watched with the face in view."""
         with self.lock:
-            frames = [f for f in self.frames if f[0] >= now - EYE_WINDOW]
-            if not frames or frames[0][0] > now - EYE_WINDOW * 0.9:
-                return None      # Less than a full minute watched yet
-            seen = sum(1 for f in frames if f[1])
-            if seen < 0.8 * len(frames):
+            if self.watched < MIN_BLINK_WATCH or not self.frames:
                 return None
-            return len(self.blinks) * len(frames) / seen   # Scale up for moments the face was lost
+            seen = sum(1 for f in self.frames if f[1]) / len(self.frames)
+            if seen < 0.8:
+                return None
+            return len(self.blinks) * 60 / (self.watched * seen)   # Scale up for moments the face was lost
 
     def score(self, now: float):
         """0 = alert, 1 = drowsy; None when the camera cannot tell (no face, too few frames)."""
@@ -158,7 +174,11 @@ def ensure_model() -> str:
 
 
 class CameraWatcher:
-    """Reads the webcam in a background thread and feeds an EyeTracker."""
+    """
+    Reads the webcam in a background thread and feeds an EyeTracker. The
+    camera is only open while it is needed (see set_active / set_mode); when
+    it is closed the camera hardware is off too.
+    """
 
     def __init__(self, index: int = 0):
         self.index = index
@@ -166,9 +186,29 @@ class CameraWatcher:
         self.stopped = threading.Event()
         self.problem = None
         self.thread = None
+        self.active = True           # False during breaks and while away
+        self.mode = "continuous"     # "continuous", "bursts" (battery) or "off" (low power mode)
+        self.cycle_start = time.monotonic()
+        self.opened = False          # Camera currently on, for the status line
+
+    def set_active(self, active: bool):
+        self.active = active
+
+    def set_mode(self, mode: str):
+        if mode != self.mode:
+            self.mode = mode
+            self.cycle_start = time.monotonic()
+
+    def wanted(self, now: float) -> bool:
+        """Whether the camera should be on right now."""
+        if not self.active or self.mode == "off":
+            return False
+        if self.mode == "bursts":
+            return (now - self.cycle_start) % BURST_CYCLE < BURST_SECONDS
+        return True
 
     def start(self):
-        """Opens the camera and the face model. Returns an error message, or None when it works."""
+        """Loads the face model and checks the camera opens. Returns an error message, or None when it works."""
         try:
             import cv2
             import mediapipe as mp
@@ -192,23 +232,43 @@ class CameraWatcher:
         except Exception as e:
             return f"the face model could not be loaded ({e})"
 
-        capture = cv2.VideoCapture(self.index)
-        if not capture.isOpened():
+        capture = self._open(cv2)
+        if capture is None:
             landmarker.close()
             return (f"camera {self.index} could not be opened (on macOS allow your terminal under "
                     "System Settings -> Privacy & Security -> Camera)")
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         self.thread = threading.Thread(target=self._run, args=(cv2, mp, capture, landmarker), daemon=True)
         self.thread.start()
         return None
+
+    def _open(self, cv2):
+        capture = cv2.VideoCapture(self.index)
+        if not capture.isOpened():
+            capture.release()
+            return None
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        return capture
 
     def _run(self, cv2, mp, capture, landmarker):
         started = time.monotonic()
         try:
             while not self.stopped.is_set():
                 tick = time.monotonic()
+                if not self.wanted(tick):
+                    if capture is not None:
+                        capture.release()   # Camera hardware (and its light) off
+                        capture = None
+                        self.opened = False
+                    self.stopped.wait(0.5)
+                    continue
+                if capture is None:
+                    capture = self._open(cv2)
+                    if capture is None:
+                        self.problem = "the camera could not be opened again"
+                        break
+                self.opened = True
                 ok, frame = capture.read()
                 if not ok:
                     self.problem = "the camera stopped sending images"
@@ -224,7 +284,9 @@ class CameraWatcher:
                 self.tracker.add(tick, eyes, jaw)
                 self.stopped.wait(max(0.0, FRAME_INTERVAL - (time.monotonic() - tick)))
         finally:
-            capture.release()
+            if capture is not None:
+                capture.release()
+            self.opened = False
             landmarker.close()
 
     def stop(self):

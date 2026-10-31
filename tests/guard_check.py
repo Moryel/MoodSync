@@ -42,6 +42,16 @@ def check():
     watcher = display.ForegroundWatcher()
     watcher.changed()
     results.append(f"foreground window: {'readable' if watcher.read() is not None else 'not readable'}")
+
+    events = display.ForegroundEvents(lambda: None)
+    how = events.start()
+    events.wait(0.5)
+    events.stop()
+    alive = events.thread is not None and events.thread.is_alive()
+    results.append(f"switch events: {how}, started and stopped{' (thread still running!)' if alive else ''}")
+
+    import power
+    results.append(f"power state (on battery, low power): {power.power_state()}")
     return results
 
 

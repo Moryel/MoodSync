@@ -220,10 +220,19 @@ class Fader:
     def __init__(self, fade_seconds: float):
         self.tau = max(0.01, fade_seconds / 3)   # ~95% of the way after fade_seconds
         self.state = None                        # [r, g, b, level, breathing]
+        self.goal = None
+
+    def settled(self) -> bool:
+        """True when the light has (almost) reached its target, so it can be updated rarely."""
+        if self.state is None:
+            return False
+        return (all(abs(s - g) < 1.0 for s, g in zip(self.state[:3], self.goal[:3]))
+                and all(abs(s - g) < 0.005 for s, g in zip(self.state[3:], self.goal[3:])))
 
     def step(self, target: tuple, dt: float) -> list:
         color, level, breathing = target
         goal = [*color, level, breathing]
+        self.goal = goal
         if self.state is None:
             self.state = goal
         else:

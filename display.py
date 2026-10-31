@@ -2,8 +2,8 @@
 MoodSync platform code for the screen guard (guard.py):
 
   gamma:      dims the whole screen     macOS Quartz, Windows gdi32, Linux X11 RandR
-  foreground: notices app/window/Space  macOS Quartz window list, Windows user32,
-              switches                  Linux X11 _NET_ACTIVE_WINDOW
+  foreground: notices app/window/Space  macOS NSWorkspace notifications, Windows
+              switches                  SetWinEventHook, Linux X11 events
   overlay:    click-through dark        macOS AppKit, Windows layered windows,
               windows over white areas  Linux X11 (needs a compositor)
 
@@ -210,8 +210,14 @@ def open_gamma():
 
 # ----- foreground window ------------------------------------------------------------
 
+POLL_SECONDS = 0.2          # Fallback check for systems that do not tell us (and new windows on macOS)
+
+
 class ForegroundWatcher:
-    """changed() is True when another app or window came to the front (or the Space changed)."""
+    """
+    Reads which window is in front. changed() is True when another app or
+    window came to the front (or the Space/desktop changed).
+    """
 
     def __init__(self):
         self.last = None
@@ -255,6 +261,171 @@ class ForegroundWatcher:
             return False
         before, self.last = self.last, current
         return before is not None and current is not None and current != before
+
+
+class ForegroundEvents:
+    """
+    Calls on_change() as soon as another app or window comes to the front,
+    without asking many times a second where the system can tell us:
+
+      macOS:   NSWorkspace notifications (app switch, app launch, Space change),
+               delivered on the main thread while it waits in wait();
+               new windows inside the same app are still checked 5 times a second
+      Windows: SetWinEventHook(EVENT_SYSTEM_FOREGROUND), no polling at all
+      Linux:   X11 PropertyNotify on _NET_ACTIVE_WINDOW, no polling at all
+    """
+
+    def __init__(self, on_change):
+        self.on_change = on_change
+        self.stopped = False
+        self.thread = None
+        self.how = "none"
+        self._stop = lambda: None
+        self._runloop = None     # macOS: main thread waits in this run loop
+        self.poll_seconds = POLL_SECONDS
+
+    def start(self):
+        """Must be called from the main thread. Returns how changes are noticed."""
+        import threading
+        try:
+            if sys.platform == "darwin":
+                self._mac_notifications()
+                self.thread = threading.Thread(target=self._poll, daemon=True)   # New windows
+                self.how = "system notifications + window check 5x/s"
+            elif sys.platform == "win32":
+                self.thread = threading.Thread(target=self._windows_hook, daemon=True)
+                self.how = "system event hook"
+            elif not _linux_problem():
+                self.thread = threading.Thread(target=self._x11_events, daemon=True)
+                self.how = "X11 events"
+            else:
+                return self.how
+        except Exception:
+            self.thread = threading.Thread(target=self._poll, daemon=True)
+            self.how = "window check 5x/s"
+        self.thread.start()
+        return self.how
+
+    def wait(self, seconds: float):
+        """Waits like time.sleep, but on macOS lets notifications arrive meanwhile."""
+        if self._runloop is None:
+            time.sleep(seconds)
+            return
+        until = self._ak.NSDate.dateWithTimeIntervalSinceNow_(max(0.0, seconds))
+        while True:
+            remaining = until.timeIntervalSinceNow()
+            if remaining <= 0:
+                return
+            # Returns early after delivering a notification; then wait for the rest.
+            # False means nothing to wait on in the run loop: sleep instead of spinning.
+            if not self._runloop.runMode_beforeDate_(self._ak.NSDefaultRunLoopMode, until):
+                time.sleep(remaining)
+                return
+
+    def stop(self):
+        self.stopped = True
+        try:
+            self._stop()
+        except Exception:
+            pass
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+    def _fire(self):
+        if not self.stopped:
+            self.on_change()
+
+    # macOS ---------------------------------------------------------------
+
+    def _mac_notifications(self):
+        import AppKit
+        import Foundation
+        self._ak = AppKit
+        observer = _mac_observer_class().alloc().init()
+        observer.callback = self._fire
+        center = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+        for name in (AppKit.NSWorkspaceDidActivateApplicationNotification,
+                     AppKit.NSWorkspaceDidLaunchApplicationNotification,
+                     AppKit.NSWorkspaceActiveSpaceDidChangeNotification):
+            center.addObserver_selector_name_object_(observer, "changed:", name, None)
+        self._observer = observer
+        self._runloop = Foundation.NSRunLoop.currentRunLoop()
+        self._stop = lambda: center.removeObserver_(observer)
+
+    # Windows -------------------------------------------------------------
+
+    def _windows_hook(self):
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        WINEVENTPROC = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                                          wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+        callback = WINEVENTPROC(lambda *_: self._fire())     # Kept alive by this frame
+        user32.SetWinEventHook.restype = wintypes.HANDLE
+        user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, WINEVENTPROC,
+                                           wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+        EVENT_SYSTEM_FOREGROUND = 0x0003
+        hook = user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, callback, 0, 0, 0)
+        if not hook:
+            self._poll()
+            return
+        thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+        self._stop = lambda: user32.PostThreadMessageW(thread_id, 0x0012, 0, 0)   # WM_QUIT
+        msg = wintypes.MSG()
+        while not self.stopped and user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnhookWinEvent(hook)
+
+    # Linux X11 -----------------------------------------------------------
+
+    def _x11_events(self):
+        import select
+        from Xlib import X, display as xdisplay
+        d = xdisplay.Display()
+        root = d.screen().root
+        atom = d.intern_atom("_NET_ACTIVE_WINDOW")
+        root.change_attributes(event_mask=X.PropertyChangeMask)
+        d.flush()
+        while not self.stopped:
+            # Wakes for X events, or once a second to notice stop()
+            if not select.select([d.fileno()], [], [], 1.0)[0] and not d.pending_events():
+                continue
+            fired = False
+            while d.pending_events():
+                event = d.next_event()
+                if event.type == X.PropertyNotify and event.atom == atom and not fired:
+                    self._fire()
+                    fired = True
+        d.close()
+
+    # Fallback / macOS new windows ----------------------------------------
+
+    def _poll(self):
+        watcher = ForegroundWatcher()
+        while not self.stopped:
+            if watcher.changed():
+                self._fire()
+            time.sleep(self.poll_seconds)
+
+
+_MAC_OBSERVER = None
+
+
+def _mac_observer_class():
+    """The Objective-C class that receives NSWorkspace notifications (defined once per process)."""
+    global _MAC_OBSERVER
+    if _MAC_OBSERVER is None:
+        import Foundation
+
+        class MoodSyncSwitchObserver(Foundation.NSObject):
+            callback = None
+
+            def changed_(self, note):
+                if self.callback is not None:
+                    self.callback()
+
+        _MAC_OBSERVER = MoodSyncSwitchObserver
+    return _MAC_OBSERVER
 
 
 # ----- overlay windows ------------------------------------------------------------------

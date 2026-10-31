@@ -34,24 +34,30 @@ from collections import deque
 import numpy as np
 
 GRID_COLUMNS = 48           # Screen is judged on a grid of about 48 x 30 cells
+SAMPLES = 4                 # ...reading 4 x 4 pixels of each cell
 SLOW_SAMPLE = 0.5           # Seconds between screen samples normally
 FAST_SAMPLE = 1 / 15        # ...and around app switches / flashes
 FAST_SECONDS = 2.0          # How long sampling stays fast after an event
-EVENT_POLL = 0.05           # Seconds between foreground window checks
 GAMMA_STEP = 0.01           # Gamma is only rewritten for changes larger than this
 
 
-def luminance_grid(img: np.ndarray, columns: int = GRID_COLUMNS) -> np.ndarray:
+def luminance_grid(img: np.ndarray, columns: int = GRID_COLUMNS, samples: int = SAMPLES) -> np.ndarray:
     """
     Average brightness (0-1) of each cell of an RGB image, on a grid about
-    `columns` cells wide with roughly square cells.
+    `columns` cells wide with roughly square cells. Only samples x samples
+    evenly spread pixels per cell are read: plenty to judge a cell, and ~200x
+    less work than reading all of a full-resolution screen.
     """
     h, w = img.shape[:2]
     cell = max(1, w // columns)
     rows, cols = max(1, h // cell), max(1, w // cell)
-    img = img[:rows * cell, :cols * cell].astype(np.float32) / 255
+    k = min(samples, cell)
+    offsets = ((np.arange(k) + 0.5) * cell / k).astype(int)
+    ys = (np.arange(rows)[:, None] * cell + offsets).ravel()
+    xs = (np.arange(cols)[:, None] * cell + offsets).ravel()
+    img = img[np.ix_(ys, xs)].astype(np.float32) / 255
     luma = img[..., 0] * 0.2126 + img[..., 1] * 0.7152 + img[..., 2] * 0.0722
-    return luma.reshape(rows, cell, cols, cell).mean(axis=(1, 3))
+    return luma.reshape(rows, k, cols, k).mean(axis=(1, 3))
 
 
 def undo_overlays(grid: np.ndarray, rects: list, alpha: float) -> np.ndarray:
@@ -229,9 +235,13 @@ def _components(mask: np.ndarray):
 
 class ScreenGuard:
     """
-    Runs the guard: a background thread watches the screen and app switches
-    and drives the gamma dimming; the overlays are updated from the main
-    thread through pump(), because windows must live on the main thread.
+    Runs the guard: a background thread samples the screen and drives the
+    gamma dimming; the overlays are updated from the main thread through
+    pump(), because windows must live on the main thread.
+
+    The thread only wakes up when there is something to do: the next screen
+    sample, an app/window switch reported by the system, or the ~1 s while the
+    dimming lifts. Between those it sleeps, so the processor can too.
     """
 
     def __init__(self, monitor: int, flash_guard: bool, dim_white: bool,
@@ -246,16 +256,22 @@ class ScreenGuard:
         self.regions = RegionDimmer(strength=dim_strength) if dim_white else None
         self.lock = threading.Lock()
         self.stopped = threading.Event()
+        self.wake = threading.Event()   # Set by app-switch events to wake the thread at once
         self.thread = None
         self.gamma = None
         self.overlay = None
+        self.events = None
         self.shown = ([], 0.0)      # What the overlay currently shows (for undo_overlays)
         self.wanted = ([], 0.0)     # What the thread wants the overlay to show
         self.bounds = None          # Monitor position, for placing overlays
         self.dim = 0.0
+        self.slow_sample = SLOW_SAMPLE
+        self.fast_seconds = FAST_SECONDS
+        self.dim_white_allowed = True
+        self.switch_at = None       # Time of an app switch not yet handled by the thread
 
     def start(self):
-        """Starts what this platform supports and reports what it could not."""
+        """Starts what this platform supports and reports what it could not. Call from the main thread."""
         if self.flash is not None:
             self.gamma, problem = self.display.open_gamma()
             if problem:
@@ -268,28 +284,62 @@ class ScreenGuard:
                 self.regions = None
         if self.flash is None and self.regions is None:
             return False
+        if self.flash is not None:
+            self.events = self.display.ForegroundEvents(self._switched)
+            self.events.start()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         return True
 
+    def set_power(self, profile):
+        """Follows the power profile (see power.py): how often to look, white dimming on or off."""
+        self.slow_sample = profile.guard_sample
+        self.fast_seconds = profile.guard_fast
+        self.dim_white_allowed = profile.dim_white
+        if self.events is not None:
+            self.events.poll_seconds = 0.2 if profile.name == "charger" else 0.5
+        self.wake.set()
+
+    def _switched(self):
+        """An app/window/Space switch (any thread): handled by the guard thread right away."""
+        with self.lock:
+            self.switch_at = time.monotonic()
+        self.wake.set()
+
+    def wait(self, seconds: float):
+        """Main thread waits here instead of time.sleep, so macOS can deliver switch notifications."""
+        if self.events is not None:
+            self.events.wait(seconds)
+        else:
+            time.sleep(seconds)
+
+    def busy(self) -> bool:
+        """True while the overlay is still fading or moving, so the main loop should tick quickly."""
+        if self.overlay is None:
+            return False
+        with self.lock:
+            rects, alpha = self.wanted
+        target = alpha if rects else 0.0
+        return abs(self.overlay.current_alpha() - target) > 1e-3 or (rects and rects != self.overlay.rects)
+
     def _run(self):
-        watcher = self.display.ForegroundWatcher() if self.flash is not None else None
         sct = None
-        next_sample = next_poll = 0.0
+        next_sample = 0.0
         fast_until = 0.0
         applied = 0.0
         try:
             while not self.stopped.is_set():
                 now = time.monotonic()
 
-                if watcher is not None and now >= next_poll:
-                    next_poll = now + EVENT_POLL
-                    if watcher.changed():
-                        self.flash.on_event(now)
-                        fast_until = now + FAST_SECONDS
+                with self.lock:
+                    switch_at, self.switch_at = self.switch_at, None
+                if switch_at is not None and self.flash is not None:
+                    self.flash.on_event(now)
+                    fast_until = now + self.fast_seconds
+                    next_sample = now          # Look at the new window right away
 
                 if now >= next_sample:
-                    next_sample = now + (FAST_SAMPLE if now < fast_until else SLOW_SAMPLE)
+                    next_sample = now + (FAST_SAMPLE if now < fast_until else self.slow_sample)
                     try:
                         if sct is None:
                             sct = self.capture()
@@ -301,20 +351,21 @@ class ScreenGuard:
                             sct.close()
                         sct = None
                         next_sample = now + 5
-                        continue
-                    with self.lock:
-                        self.bounds = mon
-                        rects, alpha = self.shown
-                    grid = undo_overlays(luminance_grid(img), rects, alpha)
-                    if self.flash is not None:
-                        before = self.flash.reactions
-                        self.flash.on_sample(now, float(grid.mean()))
-                        if self.flash.reactions != before:
-                            fast_until = now + FAST_SECONDS
-                    if self.regions is not None:
-                        wanted = self.regions.update(now, grid)
+                        img = None
+                    if img is not None:
                         with self.lock:
-                            self.wanted = wanted
+                            self.bounds = mon
+                            rects, alpha = self.shown
+                        grid = undo_overlays(luminance_grid(img), rects, alpha)
+                        if self.flash is not None:
+                            before = self.flash.reactions
+                            self.flash.on_sample(now, float(grid.mean()))
+                            if self.flash.reactions != before:
+                                fast_until = now + self.fast_seconds
+                        if self.regions is not None:
+                            wanted = self.regions.update(now, grid) if self.dim_white_allowed else ([], 0.0)
+                            with self.lock:
+                                self.wanted = wanted
 
                 if self.flash is not None:
                     self.dim = self.flash.update(now)
@@ -322,7 +373,12 @@ class ScreenGuard:
                         self.gamma.set(1 - self.dim)
                         applied = self.dim
 
-                self.stopped.wait(1 / 30)
+                # Sleep until the next thing to do; 30 steps a second only while the dimming lifts
+                wake_at = next_sample
+                if self.dim > 0:
+                    wake_at = min(wake_at, now + 1 / 30)
+                self.wake.wait(max(0.0, wake_at - time.monotonic()))
+                self.wake.clear()
         finally:
             if sct is not None:
                 sct.close()
@@ -344,6 +400,9 @@ class ScreenGuard:
 
     def stop(self):
         self.stopped.set()
+        self.wake.set()
+        if self.events is not None:
+            self.events.stop()
         if self.thread is not None:
             self.thread.join(timeout=2)
         if self.overlay is not None:

@@ -107,7 +107,7 @@ MoodSync learns your normal typing rhythm in the first minutes (saved to `~/.moo
 
 Only key timings and whether a key was Backspace/Delete are used, never which keys you typed. On macOS allow your terminal under System Settings → Privacy & Security → **Input Monitoring**.
 
-With `--camera` the webcam is watched too (MediaPipe face landmarks, about 15 frames a second, nothing is saved):
+With `--camera` the webcam is watched too (MediaPipe face landmarks, about 15 frames a second, nothing is saved; off during breaks, in bursts on battery, see [Battery](#battery)):
 
 - **eye closure (PERCLOS):** share of the last minute the eyes were closed
 - **long blinks:** closures longer than 0.4 s
@@ -162,6 +162,35 @@ The timings are starting points tuned by feel, not research figures. Sampling th
 | Windows | ✅ main monitor; Windows allows about 50% dimming at most | ✅ | ✅ |
 | Linux X11 | ✅ | ✅ | ✅ with a compositor (most desktops have one) |
 | Linux Wayland | ❌ no common way to do this | ❌ | ❌ |
+
+### Battery
+
+MoodSync follows the power source (`--power auto`, the default) and checks it every 30 s:
+
+| | On the charger | On battery | Low power mode / battery saver |
+|---|---|---|---|
+| Light updates while it changes | 10/s | 5/s | 4/s |
+| Screen program captures | 20/s | 10/s | 5/s |
+| Screen guard samples | 2/s | 1/s | 1 every 2 s |
+| Camera | on while focusing | 20 s every 2 minutes | off |
+| White-area dimming | on | on | paused |
+
+On all of them:
+
+- **Nothing runs when nothing changes.** While the light is steady MoodSync updates it once a second; the faster rate is only used while it fades or breathes. The screen guard sleeps until its next sample instead of ticking 30 times a second.
+- **The camera is off during breaks and while you are away.** When it is off, the camera hardware (and its light) is off too.
+- **App switches come from the system** (macOS NSWorkspace notifications, Windows SetWinEventHook, Linux X11 events) instead of being asked for many times a second.
+- **The screen is read sparsely:** 16 pixels per grid cell instead of every pixel (about 0.6 ms instead of 16 ms per sample).
+
+What costs battery is mostly waking the processor up, not the work itself: a processor woken 30 times a second never reaches its deep sleep states. Measured on an M2 MacBook (Activity Monitor's *Energy Impact*):
+
+| | Before | Now (charger) | Now (battery) |
+|---|---|---|---|
+| Focus light | 0.5 | 0.5 | |
+| + flash guard | 2.9 | 1.1 | |
+| + white-area dimming | 3.9 | 1.3 | 0.8 |
+
+`--power full`, `--power battery` and `--power saver` force one behaviour; an explicit `--fps` always wins.
 
 ### Screen program
 
@@ -275,6 +304,7 @@ Every setting is a command line option (`python main.py --help`); the defaults l
 | `--devices` | Only control devices whose name contains these words | all |
 | `--exit-color` | Color left on the devices when stopping (`RRGGBB`) | `000000` |
 | `--host` / `--port` | OpenRGB SDK server | `127.0.0.1` / `6742` |
+| `--power` | `auto`, `full`, `battery` or `saver` | `auto` |
 
 Away detection reads the keyboard/mouse idle time: built in on macOS and Windows, needs `xprintidle` on Linux.
 
