@@ -449,7 +449,8 @@ class ScreenProgram:
             self.close()
             self.retry_at = now + SCREEN_RETRY_SECONDS
             if not self.waiting:
-                print(f"No screen to capture right now ({e or 'no monitor'}), "
+                reason = "no monitor found" if isinstance(e, IndexError) else e
+                print(f"No screen to capture right now ({reason}), "
                       f"trying again every {SCREEN_RETRY_SECONDS}s...")
                 self.waiting = True
             return None
