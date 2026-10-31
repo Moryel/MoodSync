@@ -35,7 +35,7 @@ class WatcherTests(unittest.TestCase):
         w = camera.CameraWatcher()
         w.set_mode("bursts")
         start = w.cycle_start
-        on = [w.wanted(start + s) for s in range(0, 240, 10)]
+        on = [w.wanted(start + s) for s in range(5, 240, 10)]   # mid-points, away from the edges
         self.assertEqual(sum(on), 4)             # 2 x 20 s in 4 minutes
         self.assertTrue(w.wanted(start + 5) and not w.wanted(start + 30) and w.wanted(start + 125))
 
