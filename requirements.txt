@@ -2,3 +2,5 @@ mss>=9
 numpy
 openrgb-python>=0.2.15
 pynput
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-Cocoa; sys_platform == "darwin"

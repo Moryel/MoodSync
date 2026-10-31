@@ -1,7 +1,7 @@
 """
 MoodSync focus mode - lighting that follows your work rhythm.
 
-Focus:  bright, cool daylight that keeps you alert.
+Focus:  bright, cool daylight (the colours are a preference, not a proven effect).
 Tired:  as the session goes on (or in the evening) the light slowly shifts to a
         softer, less harsh tone so it stops pushing you without breaking focus.
         Tiredness is also detected automatically from your typing (fatigue.py);
@@ -26,9 +26,9 @@ LONG_BREAK = "long break"
 AWAY = "away"
 
 # Default colors (before brightness is applied)
-FOCUS_COLOR = (170, 210, 255)   # cool daylight (~6500K), keeps you alert
+FOCUS_COLOR = (170, 210, 255)   # cool daylight (~6500K)
 TIRED_COLOR = (255, 214, 170)   # neutral warm white (~4000K), calm but awake
-REST_COLOR = (255, 130, 40)     # warm amber (~2200K), relaxing
+REST_COLOR = (255, 130, 40)     # warm amber (~2200K)
 
 BACK_IDLE_SECONDS = 5           # Idle time below this means the user is back
 

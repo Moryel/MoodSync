@@ -2,13 +2,16 @@
 
 Lighting that works with your focus, for **all PC RGB peripherals** via OpenRGB. Controls Razer, Corsair, ASUS Aura, MSI Mystic Light, Logitech, and 100+ other brands simultaneously.
 
-- **Focus:** bright, cool daylight that keeps you alert.
-- **Getting tired:** as a focus block goes on (and in the evening) the light slowly shifts to a softer, warmer white, so it stops pushing you without breaking your focus.
-- **Break:** warm, dim amber that slowly breathes (about 6 breaths a minute) to help you rest.
+- **Focus:** bright, cool daylight.
+- **Getting tired:** as a focus block goes on (and in the evening) the light slowly shifts to a softer, warmer white.
+- **Break:** warm, dim amber that slowly breathes (about 6 breaths a minute).
 - **Automatic:** tiredness is detected from your typing rhythm, and optionally from your webcam (eye closure, long blinks, yawns). When it stays high, the break starts by itself.
 - **Screen aware:** the focus light picks up a bit of your screen's color and dims when the screen is dark.
+- **Eye care:** reminds you to blink when you stare (`--camera`), dims the screen against sudden bright flashes (`--flash-guard`) and softens large white areas (`--dim-white`).
 
 MoodSync can also mirror the colors on your screen (`screen` program).
+
+> **What is and is not proven.** The colours are a matter of taste; there is no solid evidence that a particular light colour improves focus, and blue-light filtering makes little or no difference to screen eye strain. What does matter for tired eyes: blinking less while staring at a screen (the tear film dries), screens much brighter than the room, and long stretches without a break. The break rhythm, the blink reminder and the brightness features target those.
 
 ## Prerequisites
 
@@ -87,11 +90,13 @@ MoodSync learns your normal typing rhythm in the first minutes (saved to `~/.moo
 
 Only key timings and whether a key was Backspace/Delete are used, never which keys you typed. On macOS allow your terminal under System Settings → Privacy & Security → **Input Monitoring**.
 
-With `--camera` the webcam is watched too (MediaPipe face landmarks, about 10 frames a second, nothing is saved):
+With `--camera` the webcam is watched too (MediaPipe face landmarks, about 15 frames a second, nothing is saved):
 
 - **eye closure (PERCLOS):** share of the last minute the eyes were closed
 - **long blinks:** closures longer than 0.4 s
 - **yawns:** mouth wide open for more than 1.5 s
+
+**Blink reminder:** people blink about 15-20 times a minute, but often less than half as much while staring at a screen. When the camera counts fewer than 8 blinks a minute for 2 minutes during focus, the light dips twice and a short reminder appears (at most every 10 minutes, `--no-blink-reminder` to turn it off).
 
 Eyes count 60% and typing 40% when both are available. The detected tiredness softens the light right away; when it stays above 70% for 3 minutes (and you have focused at least 10 minutes), the break starts by itself. `--no-auto-break` keeps the soft light but leaves breaks to the timer, `--no-auto` turns detection off. The face model (~4 MB) is downloaded once to `~/.moodsync/`; on macOS allow your terminal under **Camera**.
 
@@ -115,6 +120,31 @@ python main.py --camera                                # also watch eyes and yaw
 python main.py --evening 19                            # warmer light from 19:00
 python main.py --rest-color 40C080                     # green breaks instead of amber
 ```
+
+### Screen guard (both programs)
+
+```bash
+python main.py --flash-guard     # dim the whole screen against sudden bright flashes
+python main.py --dim-white       # soften large white areas (white web pages, empty documents)
+```
+
+**Flash guard** dims the whole screen through the display's gamma curve (fast, and it does not show up in screenshots or screen recordings):
+
+- *Ahead of time:* switching apps, opening a window or changing Spaces/desktops is what usually throws a bright page at you. When that happens while the screen is dark, it dims right away, before the new content is even measured.
+- *Reacting:* the screen is sampled at low resolution, 2 times a second normally and 15 times a second around switches. A fast jump in brightness dims it immediately.
+- Dimming is instant, coming back takes about a second (like the eye adapting). Content that keeps flashing (videos, animations) gets one steady dim instead of pulses, so the guard does not add flicker of its own.
+- `--flash-strength` (default `0.4`) is the strongest dimming. The screen is put back exactly as it was when MoodSync stops; if it is killed while dimmed, the next start restores it.
+
+**White-area dimming** lays see-through, click-through dark windows over large white areas. Everything under them gets darker by the same factor, so text keeps its contrast. Areas switch on after about 1 s and off after 1.5 s, with separate thresholds, so scrolling does not make them blink. `--dim-strength` (default `0.3`) is the darkest it gets.
+
+The timings are starting points tuned by feel, not research figures. Sampling the screen costs a little CPU and battery, and protected video (Netflix and the like) is captured as black, so the guard cannot see it.
+
+| | Flash guard | App/window switch | White-area windows |
+|---|---|---|---|
+| macOS | ✅ | ✅ (no extra permission) | ✅ |
+| Windows | ✅ main monitor; Windows allows about 50% dimming at most | ✅ | ✅ |
+| Linux X11 | ✅ | ✅ | ✅ with a compositor (most desktops have one) |
+| Linux Wayland | ❌ no common way to do this | ❌ | ❌ |
 
 ### Screen program
 
@@ -156,6 +186,7 @@ Focus 1/4  18:42 left  tiredness   0%
 ## Features
 
 - 🎯 **Focus lighting**: Pomodoro rhythm, tiredness-aware tones, breathing break light, away detection
+- 👁️ **Eye care**: blink reminder, flash guard and white-area dimming
 - 🎮 **Universal Control**: Works with ALL OpenRGB-supported devices
 - ⚡ **Direct Mode**: Automatically enables Direct mode for instant updates (fixes Corsair RAM)
 - 🖥️ **Screen sync** with three sampling modes: `average` (whole screen, black bars ignored), `dominant` (strongest hue), `center` (100×100 center region)
@@ -192,6 +223,7 @@ Every setting is a command line option (`python main.py --help`); the defaults l
 | `--cycles` | Focus blocks before a long break | `4` |
 | `--idle-minutes` | No input this long counts as away (0 = off) | `3` |
 | `--camera` / `--camera-index` | Also detect tiredness from the webcam | off / `0` |
+| `--no-blink-reminder` | With `--camera`: no blink reminders | |
 | `--no-auto` | Do not detect tiredness from typing | |
 | `--no-auto-break` | Detect tiredness, but never start a break by itself | |
 | `--screen-mix` | Share of the screen's color in the focus light (0-1) | `0.3` |
@@ -208,6 +240,13 @@ Every setting is a command line option (`python main.py --help`); the defaults l
 | `--mode` | `average`, `dominant` or `center` | `average` |
 | `--smoothing` | 0 = instant, 0.9 = very slow fades | `0.35` |
 | `--saturation` | Saturation multiplier | `1.3` |
+
+**Screen guard (both programs)**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--flash-guard` / `--flash-strength` | Dim the screen against sudden flashes / strongest dimming (0-0.7) | off / `0.4` |
+| `--dim-white` / `--dim-strength` | Soften large white areas / darkest dimming (0-0.6) | off / `0.3` |
 
 **Both**
 

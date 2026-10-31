@@ -1,7 +1,7 @@
 """
 MoodSync - Focus lighting and Screen-to-RGB Peripheral Sync
 Drives ALL PC peripherals via OpenRGB SDK, in one of two programs:
-  focus  - bright, alerting light while you focus, softer tones as you tire,
+  focus  - bright light while you focus, softer tones as you tire,
            warm breathing light during breaks (see focus.py)
   screen - mirrors the colors on your screen
 Supports: Razer, Corsair, ASUS Aura, MSI Mystic Light, and more.
@@ -9,6 +9,7 @@ Supports: Razer, Corsair, ASUS Aura, MSI Mystic Light, and more.
 
 import argparse
 import colorsys
+import math
 import queue
 import signal
 import sys
@@ -20,6 +21,7 @@ import mss.exception
 import numpy as np
 
 import camera
+import guard
 import fatigue
 import focus
 
@@ -93,6 +95,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="detect tiredness, but never start a break by itself")
     timing.add_argument("--camera", action="store_true",
                         help="also detect tiredness from the webcam (eyes and yawns, needs mediapipe)")
+    timing.add_argument("--no-blink-reminder", action="store_true",
+                        help="with --camera: do not remind you to blink")
     timing.add_argument("--camera-index", type=int, default=0, metavar="N",
                         help="which camera to use")
     timing.add_argument("--screen-mix", type=float, default=0.3,
@@ -122,6 +126,16 @@ def parse_args(argv=None) -> argparse.Namespace:
     screen.add_argument("--saturation", type=float, default=SATURATION_BOOST,
                         help="saturation multiplier (1 = unchanged)")
 
+    protect = parser.add_argument_group("screen guard (both programs)")
+    protect.add_argument("--flash-guard", action="store_true",
+                         help="dim the whole screen against sudden bright flashes (app switches, white pages)")
+    protect.add_argument("--flash-strength", type=float, default=0.4,
+                         help="strongest flash dimming, 0-0.7")
+    protect.add_argument("--dim-white", action="store_true",
+                         help="soften large white areas with see-through, click-through windows")
+    protect.add_argument("--dim-strength", type=float, default=0.3,
+                         help="darkest white-area dimming, 0-0.6")
+
     parser.add_argument("--fps", type=float,
                         help=f"updates per second (default {FOCUS_FPS} for focus, "
                              f"{1 / UPDATE_INTERVAL:g} for screen)")
@@ -149,6 +163,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     for name in ("focus_minutes", "break_minutes", "long_break_minutes"):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be greater than 0")
+    if not 0 <= args.flash_strength <= 0.7:
+        parser.error("--flash-strength must be between 0 and 0.7")
+    if not 0 <= args.dim_strength <= 0.6:
+        parser.error("--dim-strength must be between 0 and 0.6")
     if not 0 <= args.screen_mix <= 1:
         parser.error("--screen-mix must be between 0 and 1")
     if args.cycles < 1:
@@ -534,6 +552,8 @@ class FocusProgram:
         # Optional camera: eye closure, long blinks and yawns
         self.camera = None
         self.eyes = None
+        self.blink_reminder = None if args.no_blink_reminder else camera.BlinkReminder()
+        self.cue_started = None      # Blink reminder: the light dips twice
         if args.camera:
             watcher = camera.CameraWatcher(args.camera_index)
             problem = watcher.start()
@@ -618,6 +638,12 @@ class FocusProgram:
                 self.camera = None
             else:
                 eyes = self.camera.tracker.score(now)
+                rate = self.camera.tracker.blink_rate(now)
+                if (self.blink_reminder is not None and self.session.phase == focus.FOCUS
+                        and self.blink_reminder.update(now, rate)):
+                    self.note(f"You blinked only about {rate:.0f} times in the last minute - "
+                              "blink a few times and look into the distance for a moment.")
+                    self.cue_started = now
         self.eyes = eyes
 
         # Eyes are the stronger sign; without new information keep the last level
@@ -687,6 +713,14 @@ class FocusProgram:
                                        self.args.screen_mix, not self.args.no_screen_dim)
         state = self.fader.step(target, dt)
         self.color = focus.light_color(state, now, self.settings.breath_seconds, self.args.brightness)
+        if self.cue_started is not None:
+            # Blink reminder: two gentle dips of the light within two seconds
+            t = now - self.cue_started
+            if t < 2:
+                dip = 1 - 0.4 * (0.5 - 0.5 * math.cos(2 * math.pi * t))
+                self.color = tuple(int(c * dip) for c in self.color)
+            else:
+                self.cue_started = None
         self.status(now, hour)
         return self.color
 
@@ -768,6 +802,16 @@ def main(argv=None):
     else:
         program = FocusProgram(args, time.monotonic())
 
+    screen_guard = None
+    if args.flash_guard or args.dim_white:
+        screen_guard = guard.ScreenGuard(args.monitor, args.flash_guard, args.dim_white,
+                                         args.flash_strength, args.dim_strength, ScreenCapture)
+        if screen_guard.start():
+            parts = [name for name, on in (("flash guard", screen_guard.flash), ("white-area dimming", screen_guard.regions)) if on]
+            print("Screen guard on: " + " and ".join(parts) + ".")
+        else:
+            screen_guard = None
+
     # Both programs open the screen themselves, so they recover from a sleeping display
     try:
         while True:
@@ -776,6 +820,8 @@ def main(argv=None):
                 program.command(commands.get(), started)
 
             color = program.next_color(started)
+            if screen_guard is not None:
+                screen_guard.pump()
             try:
                 # Only update if color changed significantly
                 if color is not None and color_changed(last_sent, color, args.threshold):
@@ -793,6 +839,8 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\n\nStopping MoodSync...")
     finally:
+        if screen_guard is not None:
+            screen_guard.stop()     # Screen back to normal brightness, overlays gone
         # Leave the exit color however MoodSync stops (Ctrl+C, SIGTERM or an
         # unexpected error), so the lights never stay on the last color
         if not args.dry_run:

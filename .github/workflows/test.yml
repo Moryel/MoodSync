@@ -28,7 +28,7 @@ jobs:
 
       - name: Linux desktop tools (virtual X11 screen, idle time)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb xprintidle
+        run: sudo apt-get update && sudo apt-get install -y xvfb xprintidle xcompmgr
 
       - name: Install
         run: |
@@ -43,18 +43,28 @@ jobs:
           if [ $status -ne 0 ]; then python tests/ci_annotate.py "Unit tests" unittest.log; fi
           exit $status
 
+      - name: Screen guard parts
+        if: runner.os != 'Linux'
+        run: python tests/guard_check.py
+
+      - name: Screen guard parts (Linux X11 desktop with a compositor)
+        if: runner.os == 'Linux'
+        env:
+          GUARD_ENV: X11 + compositor
+        run: xvfb-run -a bash -c "xcompmgr & sleep 1; python tests/guard_check.py"
+
       # On Linux this runs without any screen (like a server or Wayland)
       - name: Start-up check, focus program
-        run: python tests/smoke_run.py focus --camera
+        run: python tests/smoke_run.py focus --camera --flash-guard --dim-white
 
       - name: Start-up check, focus program (Linux X11 desktop)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python tests/smoke_run.py focus --camera
+        run: xvfb-run -a bash -c "xcompmgr & sleep 1; python tests/smoke_run.py focus --camera --flash-guard --dim-white"
 
       - name: Start-up check, screen program
         if: runner.os != 'Linux'
-        run: python tests/smoke_run.py screen
+        run: python tests/smoke_run.py screen --flash-guard --dim-white
 
       - name: Start-up check, screen program (Linux X11 desktop)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python tests/smoke_run.py screen
+        run: xvfb-run -a bash -c "xcompmgr & sleep 1; python tests/smoke_run.py screen --flash-guard --dim-white"

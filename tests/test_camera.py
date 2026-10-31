@@ -70,5 +70,43 @@ class EyeTrackerTests(unittest.TestCase):
         self.assertLess(t.score(end), 0.1)
 
 
+class BlinkTests(unittest.TestCase):
+    def test_counts_normal_blinking(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 60, closed_every=3.5, closed_for=0.15)    # ~17 a minute
+        self.assertAlmostEqual(t.blink_rate(end), 17, delta=2)
+
+    def test_screen_stare(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 60, closed_every=12, closed_for=0.15)     # 5 a minute
+        self.assertLess(t.blink_rate(end), camera.LOW_BLINK_RATE)
+
+    def test_needs_a_full_minute(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 30, closed_every=12)
+        self.assertIsNone(t.blink_rate(end))
+
+    def test_closed_eyes_are_not_blinks(self):
+        t = camera.EyeTracker()
+        end = feed(t, 0, 60, closed_every=10, closed_for=3)        # looking down / eyes shut
+        self.assertEqual(t.blink_rate(end), 0)
+
+    def test_reminder_timing(self):
+        r = camera.BlinkReminder()
+        self.assertFalse(r.update(0, 5))
+        self.assertFalse(r.update(60, 5))
+        self.assertTrue(r.update(120, 5))          # low for 2 minutes
+        self.assertFalse(r.update(300, 5))         # cooldown
+        self.assertFalse(r.update(400, None))      # face lost resets
+        self.assertFalse(r.update(700, 5))
+        self.assertTrue(r.update(820, 5))
+
+    def test_normal_rate_resets(self):
+        r = camera.BlinkReminder()
+        r.update(0, 5)
+        r.update(100, 15)
+        self.assertFalse(r.update(130, 5))
+
+
 if __name__ == "__main__":
     unittest.main()
