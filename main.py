@@ -9,7 +9,6 @@ Supports: Razer, Corsair, ASUS Aura, MSI Mystic Light, and more.
 
 import argparse
 import colorsys
-import contextlib
 import queue
 import signal
 import sys
@@ -422,24 +421,41 @@ def read_commands(commands: queue.Queue):
 class ScreenProgram:
     """Mirrors the colors on the screen."""
 
-    def __init__(self, args, sct):
+    def __init__(self, args):
         self.args = args
-        self.sct = sct
+        self.sct = None
         self.current = None
+        self.retry_at = 0.0
+        self.waiting = False
 
     def command(self, cmd: str, now: float):
         pass
 
     def close(self):
-        pass
+        if self.sct is not None:
+            self.sct.close()
+            self.sct = None
 
     def next_color(self, now: float):
-        try:
-            img = grab_screen(self.sct, self.args.monitor, self.args.mode)
-        except mss.exception.ScreenShotError as e:
-            print(f"Screen capture failed: {e}")
-            time.sleep(1)
+        if now < self.retry_at:
             return None
+        try:
+            if self.sct is None:
+                self.sct = ScreenCapture()
+            img = grab_screen(self.sct, self.args.monitor, self.args.mode)
+        except (mss.exception.ScreenShotError, IndexError) as e:
+            # Display asleep, locked or unplugged: wait for it with a fresh
+            # capture each time (mss caches the monitor list)
+            self.close()
+            self.retry_at = now + SCREEN_RETRY_SECONDS
+            if not self.waiting:
+                print(f"No screen to capture right now ({e or 'no monitor'}), "
+                      f"trying again every {SCREEN_RETRY_SECONDS}s...")
+                self.waiting = True
+            return None
+        if self.waiting:
+            print("Screen is back.")
+            self.waiting = False
         target = adjust_color(pick_color(img, self.args.mode), self.args.saturation, self.args.brightness)
         self.current = smooth_color(self.current, target, self.args.smoothing)
         return self.current
@@ -739,54 +755,59 @@ def main(argv=None):
 
     last_sent = None
 
-    # The focus program opens the screen itself, so it can recover from a sleeping display
-    capture = ScreenCapture() if args.program == "screen" else contextlib.nullcontext()
-    with capture as sct:
-        if args.program == "screen" and not 0 <= args.monitor < len(sct.monitors):
+    if args.program == "screen":
+        # A wrong monitor number is a mistake; no monitors at all just means the display sleeps
+        with ScreenCapture() as sct:
+            monitors = len(sct.monitors)
+        if monitors > 1 and not 0 <= args.monitor < monitors:
             print(f"Monitor {args.monitor} does not exist. Available monitors:")
             list_monitors()
             sys.exit(1)
-        if args.program == "screen":
-            program = ScreenProgram(args, sct)
-        else:
-            program = FocusProgram(args, time.monotonic())
+        program = ScreenProgram(args)
+    else:
+        program = FocusProgram(args, time.monotonic())
 
-        try:
-            while True:
-                started = time.monotonic()
-                while not commands.empty():
-                    program.command(commands.get(), started)
+    # Both programs open the screen themselves, so they recover from a sleeping display
+    try:
+        while True:
+            started = time.monotonic()
+            while not commands.empty():
+                program.command(commands.get(), started)
 
-                color = program.next_color(started)
-                try:
-                    # Only update if color changed significantly
-                    if color is not None and color_changed(last_sent, color, args.threshold):
-                        if not args.dry_run:
-                            set_all_devices_color(devices, *color)
-                        program.sent(color)
-                        last_sent = color
-                except CONNECTION_ERRORS:
-                    client, devices = reconnect(args)
-                    last_sent = None
+            color = program.next_color(started)
+            try:
+                # Only update if color changed significantly
+                if color is not None and color_changed(last_sent, color, args.threshold):
+                    if not args.dry_run:
+                        set_all_devices_color(devices, *color)
+                    program.sent(color)
+                    last_sent = color
+            except CONNECTION_ERRORS:
+                client, devices = reconnect(args)
+                last_sent = None
 
-                # Keep a steady frame rate regardless of how long the work took
-                time.sleep(max(0.0, interval - (time.monotonic() - started)))
+            # Keep a steady frame rate regardless of how long the work took
+            time.sleep(max(0.0, interval - (time.monotonic() - started)))
 
-        except KeyboardInterrupt:
-            print("\n\nStopping MoodSync...")
-            if not args.dry_run:
-                try:
-                    set_all_devices_color(devices, *args.exit_color)
-                except CONNECTION_ERRORS:
-                    pass
-        finally:
-            program.close()
-            if client is not None:
-                try:
-                    client.disconnect()
-                except CONNECTION_ERRORS:
-                    pass
+    except KeyboardInterrupt:
+        print("\n\nStopping MoodSync...")
+        if not args.dry_run:
+            try:
+                set_all_devices_color(devices, *args.exit_color)
+            except CONNECTION_ERRORS:
+                pass
+    finally:
+        program.close()
+        if client is not None:
+            try:
+                client.disconnect()
+            except CONNECTION_ERRORS:
+                pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Stopped while still starting up (connecting, loading the camera model...)
+        print("\nStopped.")
