@@ -24,6 +24,12 @@ import camera
 import fatigue
 import focus
 
+# Windows writes to pipes and log files in a legacy code page that has no ✓/✗:
+# show a '?' there instead of crashing
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
 try:
     from openrgb import OpenRGBClient
     from openrgb.utils import RGBColor, OpenRGBDisconnected

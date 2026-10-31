@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
@@ -16,9 +20,9 @@ jobs:
         python: ["3.10", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -32,7 +36,12 @@ jobs:
           pip install -r requirements.txt mediapipe
 
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        run: |
+          status=0
+          python -m unittest discover -s tests -v > unittest.log 2>&1 || status=$?
+          cat unittest.log
+          if [ $status -ne 0 ]; then python tests/ci_annotate.py "Unit tests" unittest.log; fi
+          exit $status
 
       # On Linux this runs without any screen (like a server or Wayland)
       - name: Start-up check, focus program

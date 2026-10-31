@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+from ci_annotate import annotate
+
 RUN_SECONDS = 15
 EXPECTED = {"focus": "Focus block 1/", "screen": "Press Ctrl+C to stop"}
 
@@ -39,6 +41,8 @@ def main():
         problems.append(f"never printed {EXPECTED[program]!r}")
     if problems:
         print("SMOKE TEST FAILED: " + ", ".join(problems))
+        if os.environ.get("GITHUB_ACTIONS"):
+            annotate(f"{program} start-up: " + ", ".join(problems), out)
         sys.exit(1)
     print("Smoke test passed.")
 
