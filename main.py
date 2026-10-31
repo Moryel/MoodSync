@@ -167,28 +167,34 @@ def main():
     
     last_color = None
     
-    with mss.mss() as sct:
-        while True:
-            try:
-                # Capture screen color
-                r, g, b = get_screen_center_color(sct, MONITOR_INDEX)
-                
-                # Only update if color changed significantly
-                if color_changed(last_color, (r, g, b), COLOR_THRESHOLD):
-                    set_all_devices_color(client, r, g, b)
-                    print(f"Sent: R={r:3d} G={g:3d} B={b:3d}")
-                    last_color = (r, g, b)
-                
-                time.sleep(UPDATE_INTERVAL)
-                
-            except KeyboardInterrupt:
-                print("\n\nStopping MoodSync AI...")
-                # Reset to black on exit
-                set_all_devices_color(client, 0, 0, 0)
-                break
-            except Exception as e:
-                print(f"Error: {e}")
-                time.sleep(1)
+    try:
+        with mss.mss() as sct:
+            if not 0 <= MONITOR_INDEX < len(sct.monitors):
+                print(f"Error: monitor {MONITOR_INDEX} not found "
+                      f"(available: 1-{len(sct.monitors) - 1})")
+                return
+
+            while True:
+                try:
+                    # Capture screen color
+                    r, g, b = get_screen_center_color(sct, MONITOR_INDEX)
+
+                    # Only update if color changed significantly
+                    if color_changed(last_color, (r, g, b), COLOR_THRESHOLD):
+                        set_all_devices_color(client, r, g, b)
+                        print(f"Sent: R={r:3d} G={g:3d} B={b:3d}")
+                        last_color = (r, g, b)
+
+                    time.sleep(UPDATE_INTERVAL)
+
+                except Exception as e:
+                    print(f"Error: {e}")
+                    time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nStopping MoodSync...")
+    finally:
+        # Reset to black on any exit, so the lights don't stay on the last color
+        set_all_devices_color(client, 0, 0, 0)
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ If your **Corsair RAM**, **ASUS Aura RAM**, or other devices are not reacting:
 
 ```bash
 git clone https://github.com/Moryel/MoodSync
-cd moodsync-ai
+cd MoodSync
 pip install -r requirements.txt
 ```
 
