@@ -792,12 +792,14 @@ def main(argv=None):
 
     except KeyboardInterrupt:
         print("\n\nStopping MoodSync...")
+    finally:
+        # Leave the exit color however MoodSync stops (Ctrl+C, SIGTERM or an
+        # unexpected error), so the lights never stay on the last color
         if not args.dry_run:
             try:
                 set_all_devices_color(devices, *args.exit_color)
             except CONNECTION_ERRORS:
                 pass
-    finally:
         program.close()
         if client is not None:
             try:
