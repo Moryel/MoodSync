@@ -1,6 +1,14 @@
 # MoodSync
 
-Real-time screen color synchronization for **all PC RGB peripherals** via OpenRGB. Controls Razer, Corsair, ASUS Aura, MSI Mystic Light, Logitech, and 100+ other brands simultaneously.
+Lighting that works with your focus, for **all PC RGB peripherals** via OpenRGB. Controls Razer, Corsair, ASUS Aura, MSI Mystic Light, Logitech, and 100+ other brands simultaneously.
+
+- **Focus:** bright, cool daylight that keeps you alert.
+- **Getting tired:** as a focus block goes on (and in the evening) the light slowly shifts to a softer, warmer white, so it stops pushing you without breaking your focus.
+- **Break:** warm, dim amber that slowly breathes (about 6 breaths a minute) to help you rest.
+- **Automatic:** tiredness is detected from your typing rhythm, and optionally from your webcam (eye closure, long blinks, yawns). When it stays high, the break starts by itself.
+- **Screen aware:** the focus light picks up a bit of your screen's color and dims when the screen is dark.
+
+MoodSync can also mirror the colors on your screen (`screen` program).
 
 ## Prerequisites
 
@@ -40,8 +48,9 @@ If your **Corsair RAM**, **ASUS Aura RAM**, or other devices are not reacting:
 
 ```bash
 git clone https://github.com/Moryel/MoodSync
-cd moodsync-ai
+cd MoodSync
 pip install -r requirements.txt
+pip install mediapipe        # only for --camera
 ```
 
 ## Usage
@@ -50,41 +59,107 @@ pip install -r requirements.txt
 2. Run the script:
 
 ```bash
-python main.py
+python main.py              # focus lighting (default)
+python main.py screen       # mirror the screen colors
+```
+
+### Focus program
+
+The rhythm follows the Pomodoro technique: 25 minutes of focus, a 5 minute break, and a 15 minute long break after every 4 blocks.
+
+| Phase | Light |
+|-------|-------|
+| Focus, fresh | Cool daylight (`AAD2FF`), full brightness |
+| Focus, second half / later blocks / evening | Slowly shifts to neutral warm white (`FFD6AA`), up to 30% dimmer |
+| Break | Warm amber (`FF8228`), dim, breathing |
+| Away (no keyboard/mouse input for 3 min) | Low amber glow, focus timer paused |
+
+#### Automatic tiredness detection
+
+MoodSync learns your normal typing rhythm in the first minutes (saved to `~/.moodsync.json`, refreshed at the start of later focus blocks) and then compares the last 3 minutes against it:
+
+- **slower typing:** time between keystrokes
+- **more corrections:** share of Backspace/Delete
+- **more hesitation:** 2-30 second pauses
+
+Only key timings and whether a key was Backspace/Delete are used, never which keys you typed. On macOS allow your terminal under System Settings → Privacy & Security → **Input Monitoring**.
+
+With `--camera` the webcam is watched too (MediaPipe face landmarks, about 10 frames a second, nothing is saved):
+
+- **eye closure (PERCLOS):** share of the last minute the eyes were closed
+- **long blinks:** closures longer than 0.4 s
+- **yawns:** mouth wide open for more than 1.5 s
+
+Eyes count 60% and typing 40% when both are available. The detected tiredness softens the light right away; when it stays above 70% for 3 minutes (and you have focused at least 10 minutes), the break starts by itself. `--no-auto-break` keeps the soft light but leaves breaks to the timer, `--no-auto` turns detection off. The face model (~4 MB) is downloaded once to `~/.moodsync/`; on macOS allow your terminal under **Camera**.
+
+#### Screen
+
+During focus the light takes 30% of the screen's average hue (`--screen-mix`) and dims down to 60% when the screen is dark (`--no-screen-dim` to keep it), so the room never glares next to a dark editor. Breaks ignore the screen. `--no-screen` turns this off.
+
+Coming back after a short absence continues the same focus block; an absence longer than a break counts as a break. While it runs, type a letter and press Enter:
+
+| Key | Action |
+|-----|--------|
+| `t` | I'm tired (on top of automatic detection): switch to the softer light until the next break (again = undo) |
+| `b` | Start a break now |
+| `f` | End the break / start focusing now |
+| `s` | Show status |
+| `q` | Quit |
+
+```bash
+python main.py --focus-minutes 50 --break-minutes 10   # longer deep-work blocks
+python main.py --camera                                # also watch eyes and yawns
+python main.py --evening 19                            # warmer light from 19:00
+python main.py --rest-color 40C080                     # green breaks instead of amber
+```
+
+### Screen program
+
+```bash
+python main.py screen --mode dominant   # follow the strongest color instead of the average
+python main.py screen --monitor 2       # capture the second monitor
+python main.py --list-monitors          # show monitor numbers
+```
+
+### For both
+
+```bash
+python main.py --devices corsair razer  # only control matching devices
+python main.py --brightness 0.6         # dim the LEDs
+python main.py --dry-run                # test without OpenRGB, colors are printed in the terminal
 ```
 
 Example output:
 ```
 ============================================================
-  MoodSync - PC Peripheral RGB Sync
+  MoodSync - Focus Lighting
 ============================================================
 
-Detected 4 RGB device(s):
+Detected 2 RGB device(s):
   - Razer Huntsman Elite (KEYBOARD)
   - Corsair Vengeance RGB Pro (DRAM)
-  - ASUS ROG STRIX B550-F (MOTHERBOARD)
-  - G.Skill Trident Z RGB (DRAM)
 
 Enabling Direct mode on all devices...
   ✓ Razer Huntsman Elite: Direct mode enabled
   ✓ Corsair Vengeance RGB Pro: Direct mode enabled
-  ✓ ASUS ROG STRIX B550-F: Direct mode enabled
-  ✓ G.Skill Trident Z RGB: Direct mode enabled
 
-Monitor: 1
-Update threshold: 10
-Press Ctrl+C to stop
+Focus 25 min, break 5 min, long break 15 min after 4 blocks
+Type a letter + Enter: b = break now, f = focus now, t = I'm tired, q = quit
 ------------------------------------------------------------
-Sent: R=255 G=  0 B=  0
-Sent: R=128 G= 64 B= 32
+Focus block 1/4 - 25 min. Bright light, time to work.
+Focus 1/4  18:42 left  tiredness   0%
 ```
 
 ## Features
 
+- 🎯 **Focus lighting**: Pomodoro rhythm, tiredness-aware tones, breathing break light, away detection
 - 🎮 **Universal Control**: Works with ALL OpenRGB-supported devices
 - ⚡ **Direct Mode**: Automatically enables Direct mode for instant updates (fixes Corsair RAM)
-- 🧠 **Smart Updates**: Only sends data when color changes (saves CPU)
-- 🛡️ **Safe**: Graceful error handling if OpenRGB is not running
+- 🖥️ **Screen sync** with three sampling modes: `average` (whole screen, black bars ignored), `dominant` (strongest hue), `center` (100×100 center region)
+- 🌈 **LED-friendly colors**: saturation boost, brightness cap and smooth fades
+- 🧠 **Smart Updates**: Only sends data when color changes (saves CPU), steady frame rate
+- 🔌 **Auto reconnect**: Keeps running if OpenRGB restarts, picks the devices up again
+- 🛡️ **Safe**: Graceful error handling, sets a chosen color (default: off) on exit or SIGTERM
 
 ## Supported Devices
 
@@ -102,13 +177,55 @@ OpenRGB supports 100+ brands including:
 
 ## Configuration
 
-Edit the constants in `main.py`:
+Every setting is a command line option (`python main.py --help`); the defaults live at the top of `main.py` and `focus.py`.
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `MONITOR_INDEX` | Monitor to capture (1 = primary) | `1` |
-| `COLOR_THRESHOLD` | Minimum color change to trigger update | `10` |
-| `UPDATE_INTERVAL` | Seconds between captures | `0.05` |
+**Focus program**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--focus-minutes` | Length of a focus block | `25` |
+| `--break-minutes` | Length of a short break | `5` |
+| `--long-break-minutes` | Length of the long break | `15` |
+| `--cycles` | Focus blocks before a long break | `4` |
+| `--idle-minutes` | No input this long counts as away (0 = off) | `3` |
+| `--camera` / `--camera-index` | Also detect tiredness from the webcam | off / `0` |
+| `--no-auto` | Do not detect tiredness from typing | |
+| `--no-auto-break` | Detect tiredness, but never start a break by itself | |
+| `--screen-mix` | Share of the screen's color in the focus light (0-1) | `0.3` |
+| `--no-screen-dim` / `--no-screen` | Do not dim with a dark screen / ignore the screen | |
+| `--evening` | Hour from which the light starts warmer (-1 = off) | `20` |
+| `--fade-seconds` | How long a change of light takes | `20` |
+| `--focus-color` / `--tired-color` / `--rest-color` | Colors (`RRGGBB`) | `AAD2FF` / `FFD6AA` / `FF8228` |
+
+**Screen (both programs, the focus light uses the average color)**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--monitor` | Monitor to capture (1 = primary, 0 = all) | `1` |
+| `--mode` | `average`, `dominant` or `center` | `average` |
+| `--smoothing` | 0 = instant, 0.9 = very slow fades | `0.35` |
+| `--saturation` | Saturation multiplier | `1.3` |
+
+**Both**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--fps` | Updates per second | `10` focus / `20` screen |
+| `--threshold` | Minimum color change (0-255) to trigger an update | `1` focus / `10` screen |
+| `--brightness` | Maximum LED brightness (0-1) | `1.0` |
+| `--devices` | Only control devices whose name contains these words | all |
+| `--exit-color` | Color left on the devices when stopping (`RRGGBB`) | `000000` |
+| `--host` / `--port` | OpenRGB SDK server | `127.0.0.1` / `6742` |
+
+Away detection reads the keyboard/mouse idle time: built in on macOS and Windows, needs `xprintidle` on Linux.
+
+**macOS:** allow your terminal under System Settings → Privacy & Security → Screen Recording, otherwise only the wallpaper is captured.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests
+```
 
 ## License
 
