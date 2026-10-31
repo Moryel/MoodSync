@@ -1,0 +1,51 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Linux desktop tools (virtual X11 screen, idle time)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xprintidle
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt mediapipe
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      # On Linux this runs without any screen (like a server or Wayland)
+      - name: Start-up check, focus program
+        run: python tests/smoke_run.py focus --camera
+
+      - name: Start-up check, focus program (Linux X11 desktop)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python tests/smoke_run.py focus --camera
+
+      - name: Start-up check, screen program
+        if: runner.os != 'Linux'
+        run: python tests/smoke_run.py screen
+
+      - name: Start-up check, screen program (Linux X11 desktop)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python tests/smoke_run.py screen

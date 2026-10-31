@@ -49,9 +49,12 @@ If your **Corsair RAM**, **ASUS Aura RAM**, or other devices are not reacting:
 ```bash
 git clone https://github.com/Moryel/MoodSync
 cd MoodSync
-pip install -r requirements.txt
-pip install mediapipe        # only for --camera
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt   # Windows: .venv\Scripts\pip
+.venv/bin/pip install mediapipe             # only for --camera
 ```
+
+Then run it with `.venv/bin/python main.py` (Windows: `.venv\Scripts\python main.py`).
 
 ## Usage
 
