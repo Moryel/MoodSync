@@ -11,7 +11,24 @@ Lighting that works with your focus, for **all PC RGB peripherals** via OpenRGB.
 
 MoodSync can also mirror the colors on your screen (`screen` program).
 
-> **What is and is not proven.** The colours are a matter of taste; there is no solid evidence that a particular light colour improves focus, and blue-light filtering makes little or no difference to screen eye strain. What does matter for tired eyes: blinking less while staring at a screen (the tear film dries), screens much brighter than the room, and long stretches without a break. The break rhythm, the blink reminder and the brightness features target those.
+## Purpose
+
+MoodSync is meant to make long hours at the computer easier on you, mostly on your eyes:
+
+1. **A work rhythm with real breaks.** Focus blocks and breaks, ended early when you are clearly tired.
+2. **Light that does not fight the screen.** The room light follows the screen's brightness, so a bright room next to a dark editor (or the other way round) does not wear you out.
+3. **Help for the eyes where it is known to matter.** A reminder to blink, and protection against the screen suddenly becoming much brighter.
+
+### What is and is not backed by research
+
+- **Blue light is not the main problem.** A 2023 Cochrane review of 17 randomised trials found that blue-light filtering glasses make little or no difference to eye strain from screens [[1]](#sources) [[2]](#sources). That is why MoodSync does not filter blue light.
+- **Blinking less is.** People blink far less while working at a screen, the tear film dries out, and that causes much of the discomfort [[3]](#sources) [[2]](#sources). That is why there is a blink reminder.
+- **Brightness matters.** Reading on a very bright screen together with reduced blinking increases visual fatigue [[4]](#sources). That is why the screen guard dims sudden bright flashes and large white areas.
+- **So does the match with the room.** A mismatch between room light and screen brightness is a problem of its own [[5]](#sources). Adaptive brightness helps modestly; one manufacturer estimates 7-17 % fewer eye strain symptoms than with fixed brightness [[6]](#sources). That is why the focus light follows the screen.
+- **Dark mode is not always better.** Dark mode is found more comfortable in dim light and light mode in bright light, while reading speed and comprehension do not differ [[7]](#sources) [[8]](#sources). That is why nothing in MoodSync forces a dark look.
+- **Eye closure is a recognised alertness measure.** The share of time the eyes are closed (PERCLOS) is a validated sign of drowsiness [[9]](#sources). The camera uses it to detect tiredness.
+
+**Not backed by research:** the focus, tired and rest light colours are a matter of taste. There is no solid evidence that a particular light colour improves focus. The screen guard's timings (instant dimming, about 1 s to come back) are starting points tuned by feel, not research figures.
 
 ## Prerequisites
 
@@ -268,6 +285,18 @@ Away detection reads the keyboard/mouse idle time: built in on macOS and Windows
 ```bash
 python -m unittest discover -s tests
 ```
+
+## Sources
+
+1. Singh S, Keller PR, Busija L, et al. *Blue-light filtering spectacle lenses for visual performance, sleep, and macular health in adults.* Cochrane Database of Systematic Reviews, 2023. https://doi.org/10.1002/14651858.CD013244.pub2
+2. Acıbadem International. *Blue light glasses: do they actually work? The evidence, honestly* (plain-language summary). https://acibademinternational.com/blog/blue-light-glasses-do-they-actually-work-the-evidence-honestly/
+3. Patel S, Henderson R, Bradley L, Galloway B, Hunter L. *Effect of visual display unit use on blink rate and tear stability.* Optometry and Vision Science, 1991. https://doi.org/10.1097/00006324-199111000-00010
+4. Benedetto S, Carbone A, Drai-Zerbib V, Pedrotti M, Baccino T. *Effects of luminance and illuminance on visual fatigue and arousal during digital reading.* Computers in Human Behavior, 2014. https://doi.org/10.1016/j.chb.2014.09.023
+5. Hou D, Xu W, Jing S, Lin Y. *Display dimming model characterized by three-dimensional ergonomic study.* Optical Engineering 60(3), 2021. https://doi.org/10.1117/1.OE.60.3.035110
+6. Dell Technologies. *Estimating the benefits of advanced monitor functionality* (manufacturer white paper). https://www.delltechnologies.com/asset/en-us/products/electronics-and-accessories/industry-market/estimating-the-benefits-of-advanced-monitor-functionality.pdf
+7. Sengsoon P, Intaruk R. *Immediate effects of light mode and dark mode features on visual fatigue in tablet users.* International Journal of Environmental Research and Public Health, 2025. https://doi.org/10.3390/ijerph22040609
+8. Gadget Hacks. *Dark mode vs light mode: what research says about when each works best* (news summary). https://android.gadgethacks.com/news/dark-mode-vs-light-mode-what-research-says-about-when-each-works-best/
+9. Dinges DF, Grace R. *PERCLOS: A valid psychophysiological measure of alertness as assessed by psychomotor vigilance.* Federal Highway Administration, 1998. https://doi.org/10.1037/e449092008-001
 
 ## License
 
